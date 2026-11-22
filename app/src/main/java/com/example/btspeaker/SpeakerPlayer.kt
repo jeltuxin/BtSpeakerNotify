@@ -23,9 +23,12 @@ fun defaultRingtoneUri(context: Context): Uri =
 /**
  * Проигрывает звук принудительно через встроенный динамик телефона,
  * даже если подключены Bluetooth-наушники.
+ *
+ * Плеер один на всё приложение (см. [get]): так два уведомления подряд
+ * не могут запустить два звука одновременно или перезапустить друг друга.
  * Все методы нужно вызывать из главного потока.
  */
-class SpeakerPlayer(context: Context) {
+class SpeakerPlayer private constructor(context: Context) {
 
     private val ctx = context.applicationContext
     private val audio: AudioManager = ctx.getSystemService(AudioManager::class.java)
@@ -33,6 +36,7 @@ class SpeakerPlayer(context: Context) {
     private val stopTask = Runnable { stopInternal() }
 
     private var player: MediaPlayer? = null
+    private var pendingStart: Runnable? = null
     private var ringing = false
 
     /** Подключены ли сейчас Bluetooth-наушники (и, по желанию, проводные) */
@@ -53,15 +57,28 @@ class SpeakerPlayer(context: Context) {
         }
     }
 
-    /** Короткий звук уведомления. Если [uri] не открылся — пробуем [fallback]. */
-    fun playNotification(uri: Uri, fallback: Uri?, volumePercent: Int) {
+    /**
+     * Короткий звук уведомления на динамике.
+     *
+     * @param sequential true — подождать, пока система доиграет такой же звук в наушниках,
+     *                   и только потом играть на динамике (чтобы два звука не мешали друг другу)
+     * @param force true — перебить текущий звук (для кнопки проверки)
+     */
+    fun playNotification(
+        uri: Uri,
+        fallback: Uri?,
+        volumePercent: Int,
+        sequential: Boolean,
+        force: Boolean = false
+    ) {
         handler.post {
             if (ringing) return@post // не перебиваем звонок
+            if (player != null && !force) return@post // уже что-то играет — второй раз не запускаем
             start(
                 uri, fallback, volumePercent,
                 AudioAttributes.USAGE_NOTIFICATION,
                 AudioAttributes.CONTENT_TYPE_SONIFICATION,
-                false, NOTIFICATION_MAX_MS
+                false, NOTIFICATION_MAX_MS, sequential
             )
         }
     }
@@ -74,7 +91,7 @@ class SpeakerPlayer(context: Context) {
                 uri, null, volumePercent,
                 AudioAttributes.USAGE_NOTIFICATION_RINGTONE,
                 AudioAttributes.CONTENT_TYPE_SONIFICATION,
-                true, RINGTONE_MAX_MS
+                true, RINGTONE_MAX_MS, false
             )
         }
     }
@@ -83,6 +100,7 @@ class SpeakerPlayer(context: Context) {
         handler.post { if (ringing) stopInternal() }
     }
 
+    /** Остановить всё, что сейчас играет. */
     fun release() {
         handler.removeCallbacksAndMessages(null)
         stopInternal()
@@ -99,7 +117,8 @@ class SpeakerPlayer(context: Context) {
         usage: Int,
         contentType: Int,
         loop: Boolean,
-        maxMs: Long
+        maxMs: Long,
+        sequential: Boolean
     ) {
         stopInternal()
         val mp = MediaPlayer()
@@ -117,13 +136,32 @@ class SpeakerPlayer(context: Context) {
             // Ключевая строка: направляем звук именно на динамик телефона
             speakerDevice()?.let { mp.setPreferredDevice(it) }
 
-            mp.setOnPreparedListener { it.start() }
+            mp.setOnPreparedListener { p ->
+                if (player !== p) return@setOnPreparedListener
+                val wait = if (sequential) p.duration.coerceIn(0, MAX_SEQ_WAIT_MS.toInt()) + SEQ_MARGIN_MS else 0L
+                if (wait <= 0L) {
+                    p.start()
+                } else {
+                    val task = Runnable {
+                        pendingStart = null
+                        if (player === p) {
+                            try {
+                                p.start()
+                            } catch (e: Exception) {
+                                stopInternal()
+                            }
+                        }
+                    }
+                    pendingStart = task
+                    handler.postDelayed(task, wait)
+                }
+            }
             mp.setOnCompletionListener { stopInternal() }
             mp.setOnErrorListener { _, what, extra ->
                 Log.w(TAG, "MediaPlayer error $what/$extra for $uri")
                 stopInternal()
                 if (fallback != null && fallback != uri) {
-                    start(fallback, null, volumePercent, usage, contentType, loop, maxMs)
+                    start(fallback, null, volumePercent, usage, contentType, loop, maxMs, sequential)
                 }
                 true
             }
@@ -131,20 +169,23 @@ class SpeakerPlayer(context: Context) {
 
             player = mp
             ringing = loop
-            handler.postDelayed(stopTask, maxMs)
+            val extra = if (sequential) MAX_SEQ_WAIT_MS + SEQ_MARGIN_MS else 0L
+            handler.postDelayed(stopTask, maxMs + extra)
         } catch (e: Exception) {
             Log.w(TAG, "Cannot play $uri", e)
             mp.release()
             player = null
             ringing = false
             if (fallback != null && fallback != uri) {
-                start(fallback, null, volumePercent, usage, contentType, loop, maxMs)
+                start(fallback, null, volumePercent, usage, contentType, loop, maxMs, sequential)
             }
         }
     }
 
     private fun stopInternal() {
         handler.removeCallbacks(stopTask)
+        pendingStart?.let { handler.removeCallbacks(it) }
+        pendingStart = null
         val mp = player
         player = null
         ringing = false
@@ -161,9 +202,19 @@ class SpeakerPlayer(context: Context) {
         }
     }
 
-    private companion object {
-        const val TAG = "SpeakerPlayer"
-        const val NOTIFICATION_MAX_MS = 8_000L
-        const val RINGTONE_MAX_MS = 60_000L
+    companion object {
+        private const val TAG = "SpeakerPlayer"
+        private const val NOTIFICATION_MAX_MS = 8_000L
+        private const val RINGTONE_MAX_MS = 60_000L
+        private const val MAX_SEQ_WAIT_MS = 6_000L
+        private const val SEQ_MARGIN_MS = 250L
+
+        @Volatile
+        private var instance: SpeakerPlayer? = null
+
+        fun get(context: Context): SpeakerPlayer =
+            instance ?: synchronized(this) {
+                instance ?: SpeakerPlayer(context.applicationContext).also { instance = it }
+            }
     }
 }

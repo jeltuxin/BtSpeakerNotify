@@ -31,7 +31,7 @@ class MainActivity : Activity() {
         setContentView(R.layout.activity_main)
 
         prefs = Prefs(this)
-        player = SpeakerPlayer(this)
+        player = SpeakerPlayer.get(this)
 
         status = findViewById(R.id.status)
         btnAccess = findViewById(R.id.btnAccess)
@@ -59,6 +59,10 @@ class MainActivity : Activity() {
         swWired.isChecked = prefs.wired
         swWired.setOnCheckedChangeListener { _, checked -> prefs.wired = checked }
 
+        val swSequential = findViewById<Switch>(R.id.swSequential)
+        swSequential.isChecked = prefs.sequential
+        swSequential.setOnCheckedChangeListener { _, checked -> prefs.sequential = checked }
+
         seekVolume.progress = prefs.volume
         updateVolumeLabel(prefs.volume)
         seekVolume.setOnSeekBarChangeListener(object : SeekBar.OnSeekBarChangeListener {
@@ -77,7 +81,7 @@ class MainActivity : Activity() {
             startActivity(Intent(this, AppPickerActivity::class.java))
         }
         findViewById<Button>(R.id.btnTest).setOnClickListener {
-            player.playNotification(defaultNotificationUri(this), null, prefs.volume)
+            player.playNotification(defaultNotificationUri(this), null, prefs.volume, false, true)
         }
         findViewById<Button>(R.id.btnAutostart).setOnClickListener { openAutostart() }
         findViewById<Button>(R.id.btnBattery).setOnClickListener {
@@ -106,11 +110,6 @@ class MainActivity : Activity() {
                 service.registerCallWatcher()
             }
         }
-    }
-
-    override fun onDestroy() {
-        player.release()
-        super.onDestroy()
     }
 
     override fun onRequestPermissionsResult(

@@ -31,14 +31,11 @@ class NotificationSpeakerService : NotificationListenerService() {
     private var telephonyCallback: Any? = null
     private var legacyListener: Any? = null
 
-    private val lastPlayed = HashMap<String, Long>()
-    private var lastAnyPlay = 0L
-
     override fun onCreate() {
         super.onCreate()
         prefs = Prefs(this)
         audio = getSystemService(AudioManager::class.java)
-        player = SpeakerPlayer(this)
+        player = SpeakerPlayer.get(this)
     }
 
     override fun onListenerConnected() {
@@ -68,10 +65,6 @@ class NotificationSpeakerService : NotificationListenerService() {
         }
     }
 
-    override fun onNotificationRemoved(sbn: StatusBarNotification) {
-        lastPlayed.remove(sbn.key)
-    }
-
     private fun handlePosted(sbn: StatusBarNotification, rankingMap: RankingMap) {
         if (!prefs.enabled) return
 
@@ -97,9 +90,6 @@ class NotificationSpeakerService : NotificationListenerService() {
         if (ranking.importance < NotificationManager.IMPORTANCE_DEFAULT) return
         if (!ranking.matchesInterruptionFilter()) return
 
-        // Обновление уже показанного уведомления без повторного звука
-        if (flags and Notification.FLAG_ONLY_ALERT_ONCE != 0 && lastPlayed.containsKey(sbn.key)) return
-
         // Какой звук у канала уведомлений
         val channel = ranking.channel
         val sound: Uri? = if (channel != null) channel.sound else defaultNotificationUri(this)
@@ -107,18 +97,33 @@ class NotificationSpeakerService : NotificationListenerService() {
 
         if (audio.ringerMode != AudioManager.RINGER_MODE_NORMAL) return
 
+        // ---- защита от повторов: приложения часто присылают одно и то же уведомление
+        // несколько раз подряд (обновление, удаление + повторная публикация, сводка группы)
         val now = SystemClock.elapsedRealtime()
         if (now - lastAnyPlay < MIN_GAP_MS) return
-        val last = lastPlayed[sbn.key]
-        if (last != null && now - last < SAME_KEY_GAP_MS) return
+
+        val keyTime = recentKeys[sbn.key]
+        if (keyTime != null) {
+            if (now - keyTime < SAME_KEY_GAP_MS) return
+            if (flags and Notification.FLAG_ONLY_ALERT_ONCE != 0 && now - keyTime < ALERT_ONCE_MS) return
+        }
+
+        val extras = n.extras
+        val signature = sbn.key + "|" +
+                extras?.getCharSequence(Notification.EXTRA_TITLE) + "|" +
+                extras?.getCharSequence(Notification.EXTRA_TEXT)
+        val signatureTime = recentSignatures[signature]
+        if (signatureTime != null && now - signatureTime < SAME_TEXT_GAP_MS) return
 
         if (!player.headphonesConnected(prefs.wired)) return
 
         lastAnyPlay = now
-        if (lastPlayed.size > 200) lastPlayed.clear()
-        lastPlayed[sbn.key] = now
+        recentKeys[sbn.key] = now
+        recentSignatures[signature] = now
+        if (recentKeys.size > 100) recentKeys.entries.removeAll { now - it.value > ALERT_ONCE_MS }
+        if (recentSignatures.size > 100) recentSignatures.entries.removeAll { now - it.value > SAME_TEXT_GAP_MS }
 
-        player.playNotification(sound, defaultNotificationUri(this), prefs.volume)
+        player.playNotification(sound, defaultNotificationUri(this), prefs.volume, prefs.sequential)
     }
 
     // ---------------------------------------------------------------- звонки
@@ -194,7 +199,16 @@ class NotificationSpeakerService : NotificationListenerService() {
         var instance: NotificationSpeakerService? = null
 
         private const val TAG = "BtSpeakerNotify"
-        private const val MIN_GAP_MS = 800L
-        private const val SAME_KEY_GAP_MS = 3000L
+
+        // Общее состояние на весь процесс: даже если система создаст сервис дважды,
+        // повторы всё равно будут отфильтрованы.
+        private val recentKeys = HashMap<String, Long>()
+        private val recentSignatures = HashMap<String, Long>()
+        private var lastAnyPlay = 0L
+
+        private const val MIN_GAP_MS = 700L        // любые два звука подряд
+        private const val SAME_KEY_GAP_MS = 1500L  // то же самое уведомление
+        private const val SAME_TEXT_GAP_MS = 8000L // то же уведомление с тем же текстом
+        private const val ALERT_ONCE_MS = 60_000L  // «звук только один раз»
     }
 }

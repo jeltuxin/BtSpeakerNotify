@@ -9,6 +9,7 @@
     <string name="sw_enabled">Дублировать уведомления на динамик</string>
     <string name="sw_calls">Дублировать звонок на динамик</string>
     <string name="sw_wired">Работать и с проводными наушниками</string>
+    <string name="sw_sequential">Сначала наушники, потом динамик (если звук в наушниках обрезается)</string>
     <string name="volume_label">Громкость на динамике: %1$d%%</string>
 
     <string name="btn_apps">Исключить приложения</string>

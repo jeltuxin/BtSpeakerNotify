@@ -23,6 +23,11 @@ class Prefs(context: Context) {
         get() = sp.getBoolean("wired", false)
         set(value) = sp.edit().putBoolean("wired", value).apply()
 
+    /** Сначала дать системе доиграть звук в наушниках, потом играть на динамике */
+    var sequential: Boolean
+        get() = sp.getBoolean("sequential", false)
+        set(value) = sp.edit().putBoolean("sequential", value).apply()
+
     /** Громкость на динамике, 0..100 (множитель к системной громкости уведомлений) */
     var volume: Int
         get() = sp.getInt("volume", 100)
